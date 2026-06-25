@@ -1,0 +1,10 @@
+okf_version: 1
+repo: SwiftPMX
+cluster: kernel
+visibility: public
+status: active
+language: Swift
+summary: Native-Swift reader for PMX (MikuMikuDance) 3D model geometry — vertices + triangles, LH→RH, seam-weld; dependency-free, Linux + Apple.
+products: []
+depends_on: []          # leaf — pure Swift, no deps (skips text fields → no ICU)
+maintainer: gsdali
