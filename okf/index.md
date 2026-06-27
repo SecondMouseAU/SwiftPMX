@@ -28,3 +28,8 @@ See [`components/`](components/index.md) for the public surface.
 ## References
 
 See [`references/`](references/index.md) for the PMX format references.
+
+## Policies
+
+- [Query `context` first for OCCT / OCCTSwift docs](policies/context-first.md)
+- [Documentation updates are mandatory](policies/docs-current.md)
