@@ -12,14 +12,17 @@ model format (versions 2.0 and 2.1).
 
 PMX is a binary container holding a textured triangle mesh plus a rig (bones, morphs, IK, rigid
 bodies, joints, soft bodies). SwiftPMX extracts the **geometry** — vertex positions and the triangle
-index buffer — and skips everything else, including all text fields. Because it never decodes names,
-it needs **no ICU / Unicode dependency** (the usual reason a PMX parser pulls one in).
+index buffer — plus the material section's index ranges (so you can isolate a single part from a
+whole-model PMX), and skips everything else, including all text fields. Because it never decodes
+names, it needs **no ICU / Unicode dependency** (the usual reason a PMX parser pulls one in).
 
 - Pure Swift, no dependencies, Linux + Apple platforms.
 - Clean-room implementation of the documented PMX 2.0/2.1 byte layout (structure modelled on
   [oguna/MMDFormats](https://github.com/oguna/MMDFormats), CC0).
 - Handles the things that bite mesh consumers: **left-handed → right-handed** conversion, **seam
   welding**, **degenerate edge/point-draw face culling**, and **uniform scale**.
+- Recovers per-material **submesh** index ranges, so a single part (the carbody skin, a prop) can be
+  pulled out of a whole-model PMX — without decoding a single material name.
 
 ## Install
 
@@ -61,11 +64,29 @@ let raw = try PMX.read(contentsOf: url, options: opts)
 
 `PMX.looksLikePMX(data)` sniffs the `"PMX "` signature if you need to detect the format.
 
+### Submeshes
+
+`mesh.submeshes` gives one `PMX.Submesh` per material — a contiguous `(indexOffset, indexCount)` run
+into `mesh.indices`, in file order, plus that material's `materialIndex`. This is the material
+section's own segmentation of the face buffer, recovered without decoding a single name: useful for
+isolating one part (say, the carbody skin) out of a whole-model PMX.
+
+```swift
+for sub in mesh.submeshes {
+    let partIndices = mesh.indices[sub.indexOffset ..< sub.indexOffset + sub.indexCount]
+    // build a standalone Mesh from partIndices + mesh.positions ...
+}
+```
+
+It's empty if the material section can't be read (e.g. a truncated buffer) — the geometry above is
+unaffected either way.
+
 ## Scope
 
-SwiftPMX is a **geometry reader**. It does not load rig/animation data, materials, or textures, and
-it does not write any format. It is intended as the front-end that turns a PMX model into a plain
-indexed mesh you can feed into your own pipeline (rendering, CAD reconstruction, conversion, …).
+SwiftPMX is a **geometry reader**. It reads material *index ranges* for submeshing but not material
+properties (colours, textures, names), and it does not load rig/animation data or write any format.
+It is intended as the front-end that turns a PMX model into a plain indexed mesh you can feed into
+your own pipeline (rendering, CAD reconstruction, conversion, …).
 
 ## License
 
