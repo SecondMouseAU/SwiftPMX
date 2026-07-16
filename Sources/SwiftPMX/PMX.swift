@@ -16,6 +16,11 @@ import Foundation
 /// ```swift
 /// let mesh = try PMX.read(contentsOf: url)          // right-handed, welded, degenerate faces dropped
 /// print(mesh.positions.count, mesh.triangleCount)
+///
+/// for sub in mesh.submeshes {                        // isolate one material's triangles
+///     let range = sub.indexOffset ..< sub.indexOffset + sub.indexCount
+///     print("material \(sub.materialIndex): \(sub.indexCount / 3) triangles")
+/// }
 /// ```
 public enum PMX {
 
