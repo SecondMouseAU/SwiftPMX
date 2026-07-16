@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-page-2ea44f)](https://secondmouseau.github.io/SwiftPMX/)
 
-📖 **Documentation:** <https://secondmouseau.github.io/SwiftPMX/>
+📖 **Documentation:** <https://secondmouseau.github.io/SwiftPMX/> · **Changelog:** [docs/CHANGELOG.md](docs/CHANGELOG.md)
 
 A small, dependency-free **native-Swift reader for PMX** — the MikuMikuDance / MikuMikuMoving 3D
 model format (versions 2.0 and 2.1).

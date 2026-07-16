@@ -4,7 +4,7 @@ cluster: kernel
 visibility: public
 status: active
 language: Swift
-summary: Native-Swift reader for PMX (MikuMikuDance) 3D model geometry — vertices + triangles, LH→RH, seam-weld; dependency-free, Linux + Apple.
+summary: Native-Swift reader for PMX (MikuMikuDance) 3D model geometry — vertices + triangles + per-material submeshes, LH→RH, seam-weld; dependency-free, Linux + Apple.
 products: []
 depends_on: []          # leaf — pure Swift, no deps (skips text fields → no ICU)
 maintainer: gsdali
