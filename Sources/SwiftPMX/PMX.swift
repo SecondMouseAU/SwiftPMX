@@ -5,9 +5,10 @@ import Foundation
 ///
 /// PMX is a binary container holding a textured triangle mesh plus a rig (bones, morphs, IK, rigid
 /// bodies, joints, soft bodies). `SwiftPMX` reads the **geometry** — vertex positions and the
-/// triangle index buffer — and skips everything else, including all text fields (so no Unicode /
-/// ICU dependency is needed; the only reason a PMX reader normally needs one is to *decode* the
-/// names this library discards).
+/// triangle index buffer — plus the material section's index ranges (`Mesh.submeshes`, so a single
+/// part can be isolated from a whole-model PMX), and skips everything else, including all text
+/// fields (so no Unicode / ICU dependency is needed; the only reason a PMX reader normally needs
+/// one is to *decode* the names this library discards).
 ///
 /// This is a clean-room implementation of the documented PMX 2.0/2.1 byte layout, modelled on the
 /// structure of oguna/MMDFormats (CC0). Pure Swift, no platform-specific dependencies.
@@ -20,14 +21,35 @@ public enum PMX {
 
     // MARK: Result
 
+    /// One contiguous run of `Mesh.indices` belonging to a single PMX material — the material
+    /// section's own segmentation of the face buffer, recovered without decoding any text.
+    public struct Submesh: Sendable, Equatable {
+        /// Start of this run in `Mesh.indices`.
+        public var indexOffset: Int
+        /// Length of this run (always a multiple of 3).
+        public var indexCount: Int
+        /// Index into the PMX file's material list (0-based, file order).
+        public var materialIndex: Int
+
+        public init(indexOffset: Int, indexCount: Int, materialIndex: Int) {
+            self.indexOffset = indexOffset
+            self.indexCount = indexCount
+            self.materialIndex = materialIndex
+        }
+    }
+
     /// An indexed triangle mesh: unique `positions` and a flat `indices` buffer (3 per triangle).
     public struct Mesh: Equatable, Sendable {
         public var positions: [SIMD3<Float>]
         public var indices: [UInt32]
+        /// Per-material index ranges recovered from the PMX material section, in file order.
+        /// Empty if the material section couldn't be read (e.g. a truncated buffer).
+        public var submeshes: [Submesh]
 
-        public init(positions: [SIMD3<Float>], indices: [UInt32]) {
+        public init(positions: [SIMD3<Float>], indices: [UInt32], submeshes: [Submesh] = []) {
             self.positions = positions
             self.indices = indices
+            self.submeshes = submeshes
         }
 
         public var vertexCount: Int { positions.count }
@@ -93,11 +115,16 @@ public enum PMX {
     /// Read PMX bytes.
     public static func read(data: Data, options: Options = .default) throws -> Mesh {
         guard !data.isEmpty else { throw Error.empty }
-        let (positions, faces) = try parse(data: data, options: options)
-        // Build the triangle soup (apply winding here so welding sees final corners).
+        let (positions, faces, triangleMaterialIds) = try parse(data: data, options: options)
+        // Build the triangle soup (apply winding here so welding sees final corners), carrying a
+        // per-triangle material id in lockstep so a pre-weld degenerate drop can't desync it from
+        // the geometry it labels.
         var soup = [SIMD3<Float>](); soup.reserveCapacity(faces.count)
+        var materialIds: [Int32]? = triangleMaterialIds != nil ? [] : nil
+        if triangleMaterialIds != nil { materialIds!.reserveCapacity(faces.count / 3) }
         var t = 0
         while t + 2 < faces.count {
+            let triIndex = t / 3
             let a = faces[t], b = faces[t + 1], c = faces[t + 2]
             t += 3
             if options.dropDegenerate, a == b || b == c || a == c { continue }
@@ -106,9 +133,15 @@ public enum PMX {
             } else {
                 soup.append(positions[a]); soup.append(positions[b]); soup.append(positions[c])
             }
+            if let ids = triangleMaterialIds { materialIds!.append(ids[triIndex]) }
         }
         var mesh = options.weldEpsilon.map { weld(soup, epsilon: $0) } ?? indexedSoup(soup)
-        if options.dropDegenerate { mesh = dropDegenerateTriangles(mesh) }
+        if options.dropDegenerate {
+            let (m, ids) = dropDegenerateTriangles(mesh, materialIds: materialIds)
+            mesh = m
+            materialIds = ids
+        }
+        if let ids = materialIds { mesh.submeshes = buildSubmeshes(materialIds: ids) }
         return mesh
     }
 
@@ -118,10 +151,11 @@ public enum PMX {
             && data[data.startIndex + 2] == 0x58 && data[data.startIndex + 3] == 0x20
     }
 
-    // MARK: Parse (positions + flat face index list)
+    // MARK: Parse (positions + flat face index list + per-triangle material id)
 
-    private static func parse(data: Data, options: Options) throws -> (positions: [SIMD3<Float>], faces: [Int]) {
-        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> ([SIMD3<Float>], [Int]) in
+    private static func parse(data: Data, options: Options)
+        throws -> (positions: [SIMD3<Float>], faces: [Int], triangleMaterialIds: [Int32]?) {
+        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> ([SIMD3<Float>], [Int], [Int32]?) in
             var cur = Cursor(base: raw.baseAddress!, count: raw.count)
 
             // Header: "PMX " magic + version.
@@ -136,7 +170,7 @@ public enum PMX {
             _ = try cur.u8()                                  // encoding (names only — unused)
             let additionalUV = Int(try cur.u8())
             let vertexIndexSize = Int(try cur.u8())
-            _ = try cur.u8()                                  // texture index size
+            let textureIndexSize = Int(try cur.u8())
             _ = try cur.u8()                                  // material index size
             let boneIndexSize = Int(try cur.u8())
             _ = try cur.u8()                                  // morph index size
@@ -169,7 +203,43 @@ public enum PMX {
                 guard idx >= 0, idx < positions.count else { throw Error.truncated }
                 faces.append(idx)
             }
-            return (positions, faces)
+
+            // Textures + materials — recovers the submesh table (Mesh.submeshes) without decoding
+            // any text: every name/memo is stepped over with skipString(). This is best-effort: the
+            // geometry above is already complete and valid, so a truncated/malformed tail here just
+            // means no submesh info, not a failed read.
+            let triangleMaterialIds: [Int32]? = try? {
+                let textureCount = Int(try cur.i32())
+                guard textureCount >= 0 else { throw Error.truncated }
+                for _ in 0..<textureCount { try cur.skipString() }
+
+                let materialCount = Int(try cur.i32())
+                guard materialCount >= 0 else { throw Error.truncated }
+                let triangleCount = indexCount / 3
+                var ids = [Int32](); ids.reserveCapacity(triangleCount)
+                for m in 0..<materialCount {
+                    try cur.skipString()                      // name
+                    try cur.skipString()                      // english name
+                    try cur.skip(16 + 12 + 4 + 12)             // diffuse + specular + specularity + ambient
+                    _ = try cur.u8()                          // draw flags
+                    try cur.skip(16 + 4)                       // edge color + edge scale
+                    try cur.skip(textureIndexSize)             // texture index
+                    try cur.skip(textureIndexSize)             // sphere texture index
+                    _ = try cur.u8()                          // sphere mode
+                    let sharedToonFlag = try cur.u8()
+                    try cur.skip(sharedToonFlag == 0 ? textureIndexSize : 1)  // toon value
+                    try cur.skipString()                      // memo
+                    let surfaceCount = Int(try cur.i32())
+                    guard surfaceCount >= 0, surfaceCount % 3 == 0 else { throw Error.truncated }
+                    let triCount = surfaceCount / 3
+                    guard ids.count + triCount <= triangleCount else { throw Error.truncated }
+                    for _ in 0..<triCount { ids.append(Int32(m)) }
+                }
+                guard ids.count == triangleCount else { throw Error.truncated }
+                return ids
+            }()
+
+            return (positions, faces, triangleMaterialIds)
         }
     }
 
@@ -202,16 +272,41 @@ public enum PMX {
         Mesh(positions: soup, indices: (0..<UInt32(soup.count)).map { $0 })
     }
 
-    /// Drop triangles whose three vertices aren't distinct (post-weld degenerate faces).
-    static func dropDegenerateTriangles(_ m: Mesh) -> Mesh {
+    /// Drop triangles whose three vertices aren't distinct (post-weld degenerate faces — welding can
+    /// collapse a triangle to zero area even when its source indices were all different). Threads an
+    /// optional per-triangle material id in lockstep so it stays aligned with the surviving triangles.
+    static func dropDegenerateTriangles(_ m: Mesh, materialIds: [Int32]? = nil) -> (Mesh, [Int32]?) {
         var indices = [UInt32](); indices.reserveCapacity(m.indices.count)
+        var ids: [Int32]? = materialIds != nil ? [] : nil
+        if materialIds != nil { ids!.reserveCapacity(materialIds!.count) }
         var t = 0
+        var triIndex = 0
         while t + 2 < m.indices.count {
             let a = m.indices[t], b = m.indices[t + 1], c = m.indices[t + 2]
             t += 3
-            if a != b, b != c, a != c { indices.append(a); indices.append(b); indices.append(c) }
+            if a != b, b != c, a != c {
+                indices.append(a); indices.append(b); indices.append(c)
+                if let mids = materialIds { ids!.append(mids[triIndex]) }
+            }
+            triIndex += 1
         }
-        return Mesh(positions: m.positions, indices: indices)
+        return (Mesh(positions: m.positions, indices: indices), ids)
+    }
+
+    /// Collapse a per-triangle material id list into contiguous `Submesh` ranges. Drops never
+    /// reorder triangles, only remove them, so each material's surviving triangles remain one
+    /// contiguous run in file order.
+    static func buildSubmeshes(materialIds: [Int32]) -> [Submesh] {
+        var result: [Submesh] = []
+        var i = 0
+        while i < materialIds.count {
+            let material = materialIds[i]
+            var j = i + 1
+            while j < materialIds.count, materialIds[j] == material { j += 1 }
+            result.append(Submesh(indexOffset: i * 3, indexCount: (j - i) * 3, materialIndex: Int(material)))
+            i = j
+        }
+        return result
     }
 
     // MARK: Byte cursor

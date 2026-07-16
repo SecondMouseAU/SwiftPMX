@@ -10,14 +10,17 @@ model format (versions **2.0** and **2.1**).
 
 PMX is a binary container holding a textured triangle mesh plus a full rig (bones, morphs, IK, rigid
 bodies, joints, soft bodies). SwiftPMX reads the **geometry** — vertex positions and the triangle
-index buffer — and skips everything else, including all text fields. Because it never decodes names,
-it needs **no ICU / Unicode dependency** (the usual reason a PMX parser pulls one in).
+index buffer — plus the material section's index ranges for submeshing, and skips everything else,
+including all text fields. Because it never decodes names, it needs **no ICU / Unicode dependency**
+(the usual reason a PMX parser pulls one in).
 
 - Pure Swift, **zero dependencies**, builds on Apple platforms **and Linux**.
 - Clean-room implementation of the documented PMX 2.0/2.1 byte layout (structure modelled on
   [oguna/MMDFormats](https://github.com/oguna/MMDFormats), CC0).
 - Handles the things that bite mesh consumers: **left-handed → right-handed** conversion, **seam
   welding**, **degenerate edge/point-draw face culling**, and **uniform scale** — all configurable.
+- Recovers per-material **submesh** index ranges, so a single part can be isolated from a whole-model
+  PMX — without decoding a single material name.
 
 PMX format reference: the community-maintained
 [PMX 2.0/2.1 specification](https://gist.github.com/felixjones/f8a06bd48f9da9a4539f).
@@ -72,6 +75,15 @@ guard PMX.looksLikePMX(data) else { /* not a PMX file */ return }
 let mesh = try PMX.read(data: data)
 ```
 
+Isolate one part (a material group) from a whole-model PMX:
+
+```swift
+for sub in mesh.submeshes {
+    let partIndices = mesh.indices[sub.indexOffset ..< sub.indexOffset + sub.indexCount]
+    // build a standalone PMX.Mesh from partIndices + mesh.positions ...
+}
+```
+
 ---
 
 ## API reference
@@ -101,8 +113,9 @@ An indexed triangle mesh: unique `positions` and a flat `indices` buffer (three 
 
 ```swift
 struct Mesh: Equatable, Sendable {
-    var positions: [SIMD3<Float>]
-    var indices:   [UInt32]
+    var positions:  [SIMD3<Float>]
+    var indices:    [UInt32]
+    var submeshes:  [Submesh]       // per-material index ranges; [] if unreadable
 
     var vertexCount: Int            // positions.count
     var triangleCount: Int          // indices.count / 3
@@ -112,6 +125,24 @@ struct Mesh: Equatable, Sendable {
 
 `SIMD3<Float>` is the Swift standard-library type — SwiftPMX does **not** import the Apple-only `simd`
 module, which is what keeps it Linux-portable.
+
+### `PMX.Submesh`
+
+One contiguous run of `Mesh.indices` belonging to a single PMX material — the material section's own
+segmentation of the face buffer, recovered without decoding any text.
+
+```swift
+struct Submesh: Sendable, Equatable {
+    var indexOffset:   Int   // start of this run in Mesh.indices
+    var indexCount:    Int   // length of this run (always a multiple of 3)
+    var materialIndex: Int   // index into the PMX file's material list (0-based, file order)
+}
+```
+
+`Mesh.submeshes` is built by tracking a per-triangle material id through both degenerate-drop passes
+(pre-weld and post-weld), so offsets stay correct even when a material's face range contains a
+dropped face. It's empty when the material section can't be read — e.g. a truncated buffer — but that
+never affects `positions` / `indices`, which are already complete and valid at that point.
 
 ### `PMX.Options`
 
@@ -174,8 +205,20 @@ want the original PMX indexing.
 ### Degenerate faces
 
 A PMX material can request **edge** or **point** drawing; those primitives are encoded as zero-area
-triangles in the index buffer. With `dropDegenerate: true` (the default) they're removed after
-welding, leaving only real surface triangles.
+triangles in the index buffer. With `dropDegenerate: true` (the default) they're removed — once before
+welding (index-duplicate corners) and once after (corners welding can collapse to the same vertex),
+leaving only real surface triangles.
+
+### Submeshes and material segmentation
+
+PMX assigns each material a contiguous run of the face buffer (`surfaceCount`, sequential over the
+index buffer) — that is a submesh table for free, no text decoding required. `mesh.submeshes` exposes
+it as `(indexOffset, indexCount, materialIndex)` triples in file order.
+
+The tricky part: `dropDegenerate` can remove faces from *inside* a material's range, at two different
+points (pre-weld and post-weld). A per-triangle material id is threaded through both drops before the
+final contiguous ranges are derived, so `submeshes` stays correct even when a material's range
+contains a dropped face — including a face in the *middle* of the range.
 
 ---
 
@@ -184,7 +227,8 @@ welding, leaving only real surface triangles.
 SwiftPMX is a **geometry reader**, by design. It does not:
 
 - load rig or animation data (bones, morphs, IK, rigid bodies, joints, soft bodies);
-- load materials, textures, or UVs;
+- load material *properties* (colours, textures, UVs) — only each material's index range, for
+  submeshing;
 - decode model / material / bone **names** (it skips the text fields entirely);
 - **write** any format.
 
