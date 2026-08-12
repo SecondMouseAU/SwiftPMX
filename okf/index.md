@@ -9,16 +9,16 @@ timestamp: 2026-06-25
 
 # SwiftPMX
 
-A small, dependency-free **native-Swift reader for PMX** — the MikuMikuDance / MikuMikuMoving 3D model
+A small, dependency-free **native-Swift reader for PMX**: the MikuMikuDance / MikuMikuMoving 3D model
 format (2.0 and 2.1). PMX is a binary container holding a textured triangle mesh plus a rig; SwiftPMX
 extracts the **geometry** (vertex positions and the triangle index buffer) plus per-material submesh
-ranges, and skips everything else, including all text fields — so it needs no ICU/Unicode dependency.
+ranges, and skips everything else, including all text fields, so it needs no ICU/Unicode dependency.
 Clean-room implementation of the documented byte layout.
 
 ## Role in the ecosystem
 
 - **Cluster:** kernel
-- **Depends on:** nothing (leaf — pure Swift, Linux + Apple)
+- **Depends on:** nothing (leaf, pure Swift, Linux + Apple)
 - **Feeds products:** PMX mesh import (e.g. OCCTReconstruct's `--pmx2stl` / `--pmx2obj` path)
 
 ## Components
@@ -37,3 +37,4 @@ See [`references/`](references/index.md) for the PMX format references.
 - [Search before building](policies/search-before-building.md)
 - [Code structure](policies/code-structure.md)
 - [Issue labels and project-board tracking](policies/issue-tracking.md)
+- [Code style](policies/code-style.md)
